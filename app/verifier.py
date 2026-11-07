@@ -121,6 +121,32 @@ class GemmaVerifier:
                 "reason": parse_reason(text), "seconds": time.perf_counter() - t}
 
 
+class ModalVerifier:
+    """The same Gemma 3 12B + LoRA check, run on a Modal GPU (modal_app.py). Needs the `modal` package and a Modal token
+    (env MODAL_TOKEN_ID / MODAL_TOKEN_SECRET on a Space, or `modal token new` on the cluster)."""
+    name = "Gemma 3 12B + LoRA"
+
+    def __init__(self, app="fall-verifier"):
+        self.app, self.ready = app, False
+
+    def load(self):
+        import modal
+        self.fn = modal.Cls.from_name(self.app, "Verifier")().check
+        self.ready = True
+        print(f"{self.name} on Modal ({self.app}) ready", flush=True)
+
+    def check(self, frames, tau=0.5):
+        import io
+        t, jpegs = time.perf_counter(), []
+        for im in frames:  # JPEG quality 95, as the offline clips were saved
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=95)
+            jpegs.append(buf.getvalue())
+        r = self.fn.remote(jpegs)
+        return {"verifier": self.name, "verdict": "fall" if r["p_fall"] >= tau else "no_fall", "p_fall": r["p_fall"],
+                "reason": parse_reason(r["text"]), "seconds": time.perf_counter() - t}
+
+
 def _cuda():
     try:
         import torch
@@ -130,13 +156,16 @@ def _cuda():
 
 
 def load_verifiers():
-    """Checkers named in env VERIFIERS (comma separated; default none). Gemma: GEMMA_BASE (hub id or local folder),
+    """Checkers named in env VERIFIERS (comma separated; default none): gemma (on this machine's GPU) or gemma-modal
+    (on Modal, see modal_app.py; env MODAL_APP). Gemma: GEMMA_BASE (hub id or local folder),
     GEMMA_ADAPTER (hub id or local folder, optional), HF_TOKEN (Space secret; Gemma is a gated model)."""
     out = []
     for name in filter(None, (x.strip() for x in os.environ.get("VERIFIERS", "").split(","))):
         if name == "gemma":
             out.append(GemmaVerifier(os.environ.get("GEMMA_BASE", "google/gemma-3-12b-it"),
                                      os.environ.get("GEMMA_ADAPTER") or None, os.environ.get("HF_TOKEN")))
+        elif name == "gemma-modal":
+            out.append(ModalVerifier(os.environ.get("MODAL_APP", "fall-verifier")))
         else:
             raise ValueError(f"unknown verifier {name!r}")
     return out
