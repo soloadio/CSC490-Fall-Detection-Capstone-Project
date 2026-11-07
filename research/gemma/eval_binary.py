@@ -22,7 +22,7 @@ POS = {"fall", "fallen"}
 
 def split_events(split):
     ids = set()
-    for p in (HERE / "splits" / f"{split}.jsonl", HERE / "splits" / f"up_fall_events_{split}.jsonl"):
+    for p in (HERE.parent / "splits" / f"{split}.jsonl", HERE.parent / "splits" / f"up_fall_events_{split}.jsonl"):
         with open(p) as f:
             ids |= {json.loads(l)["event_id"] for l in f}
     return ids

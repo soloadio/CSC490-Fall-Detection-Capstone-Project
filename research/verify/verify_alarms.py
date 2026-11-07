@@ -26,7 +26,7 @@ import numpy as np
 from PIL import Image
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+sys.path[:0] = [str(HERE)] + [str(p) for p in HERE.parent.iterdir() if p.is_dir()]  # sibling folders of research/
 import eval_stream as es  # noqa: E402
 from build_upfall_events import frame_times as upfall_frame_times  # noqa: E402
 from stream_metrics import alarms, episodes, load_scores, load_truth  # noqa: E402

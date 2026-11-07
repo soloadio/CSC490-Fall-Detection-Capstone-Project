@@ -22,7 +22,7 @@ from collections import defaultdict
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+sys.path[:0] = [str(HERE)] + [str(p) for p in HERE.parent.iterdir() if p.is_dir()]  # sibling folders of research/
 import eval_stream as es  # noqa: E402
 import fusion_metrics as F  # noqa: E402
 from stream_metrics import load_scores, load_truth  # noqa: E402

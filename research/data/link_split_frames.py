@@ -29,11 +29,11 @@ SPLITS = ("train", "val", "test")
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--splits-dir", type=Path, default=HERE / "splits")
-    ap.add_argument("--frames-dir", type=Path, default=HERE / "frames32")
+    ap.add_argument("--splits-dir", type=Path, default=HERE.parent / "splits")
+    ap.add_argument("--frames-dir", type=Path, default=HERE.parent / "frames32")
     ap.add_argument("--upfall-frames-dir", type=Path, default=Path("/scratch/wuhungma/frames32/up_fall"),
                     help="where extract_upfall_frames.py wrote the up_fall frames")
-    ap.add_argument("--out-dir", type=Path, default=HERE / "frames32_split")
+    ap.add_argument("--out-dir", type=Path, default=HERE.parent / "frames32_split")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 

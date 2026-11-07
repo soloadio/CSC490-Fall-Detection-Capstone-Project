@@ -65,8 +65,8 @@ def scan_trials(root):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", type=Path, default=Path("/scratch/blt/up_fall"))
-    ap.add_argument("--splits-dir", type=Path, default=HERE / "splits")
-    ap.add_argument("--link-dir", type=Path, default=HERE / "up_fall_split")
+    ap.add_argument("--splits-dir", type=Path, default=HERE.parent / "splits")
+    ap.add_argument("--link-dir", type=Path, default=HERE.parent / "up_fall_split")
     ap.add_argument("--counts", nargs=3, type=int, metavar=("TRAIN", "VAL", "TEST"),
                     help="number of subjects per split (default: 70%% rounded, rest halved, test gets the odd one)")
     ap.add_argument("--seed", type=int, default=42)

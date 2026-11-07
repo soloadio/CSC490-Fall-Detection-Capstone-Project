@@ -66,7 +66,7 @@ def main():
             print(f"{out_file} exists, skipping", flush=True)
             continue
         clips = []
-        with open(HERE / "splits" / f"frames32_{split}.jsonl") as f:
+        with open(HERE.parent / "splits" / f"frames32_{split}.jsonl") as f:
             for line in f:
                 e = json.loads(line)
                 for cam, v in e["cams"].items():

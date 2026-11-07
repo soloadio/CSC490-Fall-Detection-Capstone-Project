@@ -41,7 +41,7 @@ import numpy as np
 from PIL import Image
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+sys.path[:0] = [str(HERE)] + [str(p) for p in HERE.parent.iterdir() if p.is_dir()]  # sibling folders of research/
 from build_upfall_events import frame_times as upfall_frame_times  # noqa: E402
 
 LABELS = Path("/scratch/wuhungma/omnifall/labels")
@@ -56,7 +56,7 @@ def recordings(split, datasets):
     label_paths = {d: sorted({r["path"] for r in csv.DictReader(open(LABELS / f"{d}.csv"))}) for d in datasets}
     out = []
     scen = defaultdict(set)
-    with open(HERE / "splits" / f"{split}.jsonl") as f:
+    with open(HERE.parent / "splits" / f"{split}.jsonl") as f:
         for line in f:
             r = json.loads(line)
             scen[r["dataset"]].add(r["scenario"])
@@ -70,7 +70,7 @@ def recordings(split, datasets):
                             "file": str(VIDEOS / d / f"{p}.mp4")})
     if "up_fall" in datasets:
         known = set(label_paths["up_fall"])
-        with open(HERE / "splits" / f"up_fall_{split}.jsonl") as f:
+        with open(HERE.parent / "splits" / f"up_fall_{split}.jsonl") as f:
             for line in f:
                 r = json.loads(line)
                 for c in (1, 2):
