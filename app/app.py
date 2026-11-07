@@ -173,6 +173,24 @@ def room_alarm(code, room, seen):
     start_check(cams, done)
 
 
+def warm_checker():
+    """Dashboard button: send a test clip (32 grey frames) through every checker, so the GPU is loaded before a real
+    alarm (a cold start takes about 45 s on Modal). Returns what each checker answered and how long it took."""
+    if not VERIFIERS:
+        return "Second opinion is off (no VERIFIERS set)."
+    from PIL import Image
+    frames, out = [Image.new("RGB", (320, 240), (128, 128, 128))] * 32, []
+    for v in VERIFIERS:
+        try:
+            if not v.ready:
+                raise RuntimeError("still loading")
+            r = v.check(frames)
+            out.append(f"{v.name}: ready, answered in {r['seconds']:.0f} s (test clip: {r['verdict']}, \"{r['reason']}\")")
+        except Exception as e:  # noqa: BLE001
+            out.append(f"{v.name}: NOT working ({type(e).__name__}: {str(e)[:150]})")
+    return "\n".join(out)
+
+
 def score(frames, t_end):
     t = time.perf_counter()
     p = MODEL.p_fall(frames)
@@ -393,12 +411,16 @@ with gr.Blocks(title="Fall detector") as demo:
             topic_in = gr.Textbox(label="ntfy topic for this room")
             alerts_btn = gr.Button("Turn on alerts (sends a test)")
         alerts_msg = gr.Markdown()
+        with gr.Row():
+            warm_btn = gr.Button("Wake up checker (before a demo)")
+            warm_msg = gr.Textbox(label="Checker status", lines=2, interactive=False)
         timer = gr.Timer(1.0, active=False)  # only the dashboard polls, and only after Watch is pressed
     cam.stream(on_frame, inputs=[cam, room_in, name_in, state], outputs=[state, status, log, diag],
                stream_every=STREAM_EVERY, time_limit=None, concurrency_limit=16, show_progress="hidden")
     watch.click(lambda: gr.Timer(active=True), outputs=timer)
     watch.click(None, js=UNLOCK_JS)  # browser only: a click is what allows the page to play sound later
     dash_status.change(None, inputs=dash_status, js=BEEP_JS)
+    warm_btn.click(warm_checker, outputs=warm_msg, api_name="warm_checker")
     alerts_btn.click(set_alerts, inputs=[dash_room, topic_in], outputs=alerts_msg, api_name="set_alerts")
     timer.tick(dashboard, inputs=dash_room, outputs=[dash_status, dash_log], concurrency_limit=8,
                show_progress="hidden")
