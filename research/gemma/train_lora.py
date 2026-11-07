@@ -29,7 +29,7 @@ import torch
 import torch.distributed as dist
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+sys.path[:0] = [str(HERE)] + [str(p) for p in HERE.parent.iterdir() if p.is_dir()]  # sibling folders of research/
 import gemma_binary_scoring as gs  # noqa: E402
 
 MODEL = "/home/wuhungma/scratch/models/gemma-3-12b-it"
@@ -84,7 +84,7 @@ def label_loss(model, batch, device):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--train", type=Path, default=HERE / "splits" / "frames32_train.jsonl")
+    ap.add_argument("--train", type=Path, default=HERE.parent / "splits" / "frames32_train.jsonl")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--k", type=int, default=32, help="frames per clip (must match evaluation)")
     ap.add_argument("--qlora", action="store_true", help="4-bit frozen base model")

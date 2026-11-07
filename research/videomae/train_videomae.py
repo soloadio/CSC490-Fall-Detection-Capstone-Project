@@ -42,7 +42,7 @@ STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1, 1)
 
 def load_clips(split, pos=POS):
     clips = []
-    with open(HERE / "splits" / f"frames32_{split}.jsonl") as f:
+    with open(HERE.parent / "splits" / f"frames32_{split}.jsonl") as f:
         for line in f:
             e = json.loads(line)
             for cam, v in e["cams"].items():

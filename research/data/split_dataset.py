@@ -143,8 +143,8 @@ def print_summary(dataset, rows, assignment):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--manifest", type=Path, default=HERE / "manifest.jsonl")
-    ap.add_argument("--out-dir", type=Path, default=HERE / "splits")
+    ap.add_argument("--manifest", type=Path, default=HERE.parent / "manifest.jsonl")
+    ap.add_argument("--out-dir", type=Path, default=HERE.parent / "splits")
     ap.add_argument("--datasets", nargs="+", default=["edf", "mcfd"])
     ap.add_argument("--unit", choices=["scenario", "event"], default="scenario")
     ap.add_argument("--ratios", nargs=3, type=float, default=[0.70, 0.15, 0.15],

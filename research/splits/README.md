@@ -13,7 +13,7 @@ They are **not** the splits published with OmniFall (`/scratch/wuhungma/omnifall
 | `{train,val,test}.jsonl` | Split definition for **EDF + MCFD** (one row per labelled event) | 292 / 67 / 64 |
 | `up_fall_{train,val,test}.jsonl` | Split definition for **UP-Fall** (one row per recording / trial) | 396 / 66 / 99 |
 | `up_fall_events_{train,val,test}.jsonl` | UP-Fall recordings cut into labelled events with OmniFall's timings. Same people as `up_fall_*.jsonl`. | 859 / 142 / 210 |
-| `up_fall_frame_index.jsonl` | Bookkeeping for `extract_upfall_frames.py` (where each recording's frames went). Not a split. | 561 total |
+| `up_fall_frame_index.jsonl` | Bookkeeping for `../data/extract_upfall_frames.py` (where each recording's frames went). Not a split. | 561 total |
 | `old/` | Outdated files kept for reference. Not used by anything. | |
 
 ## Who is in which split
@@ -29,10 +29,10 @@ test set is the same person in the same room; MCFD numbers are optimistic for an
 
 ## How the files were made
 
-- `../split_dataset.py`: EDF + MCFD, whole scenarios per split, about 70 / 15 / 15
-- `../split_upfall.py`: UP-Fall, whole subjects per split (12 / 2 / 3 people)
-- `../build_upfall_events.py`: `up_fall_*` -> `up_fall_events_*`
-- `../make_frames_manifest.py`: -> `frames32_*`
+- `../data/split_dataset.py`: EDF + MCFD, whole scenarios per split, about 70 / 15 / 15
+- `../data/split_upfall.py`: UP-Fall, whole subjects per split (12 / 2 / 3 people)
+- `../data/build_upfall_events.py`: `up_fall_*` -> `up_fall_events_*`
+- `../data/make_frames_manifest.py`: -> `frames32_*`
 
 ## Difference from OmniFall's published splits
 

@@ -124,7 +124,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--labels", type=Path, default=Path("/scratch/wuhungma/omnifall/labels/up_fall.csv"))
     ap.add_argument("--label-ids", type=Path, default=Path("/scratch/wuhungma/omnifall/labels/label2id.csv"))
-    ap.add_argument("--splits-dir", type=Path, default=HERE / "splits")
+    ap.add_argument("--splits-dir", type=Path, default=HERE.parent / "splits")
     ap.add_argument("--frames-root", type=Path, default=Path("/scratch/wuhungma/frames32/up_fall_events"))
     ap.add_argument("--extract", nargs="*", default=[], choices=SPLITS, help="splits to extract frames for")
     ap.add_argument("--workers", type=int, default=8)

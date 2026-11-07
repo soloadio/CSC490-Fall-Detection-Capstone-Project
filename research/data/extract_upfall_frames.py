@@ -71,9 +71,9 @@ def process_trial(job):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--splits-dir", type=Path, default=HERE / "splits")
+    ap.add_argument("--splits-dir", type=Path, default=HERE.parent / "splits")
     ap.add_argument("--out-root", type=Path, default=Path("/scratch/wuhungma/frames32/up_fall"))
-    ap.add_argument("--index", type=Path, default=HERE / "splits" / "up_fall_frame_index.jsonl")
+    ap.add_argument("--index", type=Path, default=HERE.parent / "splits" / "up_fall_frame_index.jsonl")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--limit", type=int, help="only the first N trials (for testing)")
     args = ap.parse_args()
