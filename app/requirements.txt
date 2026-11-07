@@ -1,0 +1,6 @@
+torch>=2.4,<2.15
+transformers==5.19.0
+numpy
+pillow
+peft
+accelerate

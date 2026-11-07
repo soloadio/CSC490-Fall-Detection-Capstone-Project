@@ -1,0 +1,27 @@
+# Data, frames and videos stay on the cluster
+OmnifallData/
+frames32/
+frames32_split/
+up_fall_split/
+*.mp4
+*.zip
+# Model weights live on Hugging Face / scratch
+model/
+adapter/
+*.safetensors
+*.bin
+*.pt
+# Regenerable split files (see research/splits/README.md)
+research/splits/frames32_*.jsonl
+research/splits/up_fall_events_*.jsonl
+research/splits/up_fall_frame_index.jsonl
+research/manifest.jsonl
+# Generated
+__pycache__/
+*.pyc
+*.log
+venv*/
+.venv*/
+# Private
+.alert_test_topic
+.env
