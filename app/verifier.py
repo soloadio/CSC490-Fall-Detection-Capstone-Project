@@ -1,7 +1,7 @@
 """Second opinion on a VideoMAE alarm: a vision-language model looks at the last few seconds of each camera.
 
 Offline experiment (verify_alarms.py / verify_mv.py in the project): the clip is N_FRAMES=32 frames evenly spaced over
-the 3 s ending 1 s after the alarm, at the camera's own resolution; Gemma 3 12B-it + the LoRA adapter is forced to
+the 4 s ending 1 s after the alarm, at the camera's own resolution; Gemma 3 12B-it + the LoRA adapter is forced to
 start its answer with {"verdict": "  and P(fall) is read off the next-token probabilities (gemma_binary_scoring.py);
 the answer text is then generated too, so the camera can say WHY ("evidence").
 
@@ -24,7 +24,8 @@ try:  # ZeroGPU Spaces: GPU work must run inside a @spaces.GPU function
 except ImportError:
     spaces = None
 
-N_FRAMES, CLIP_SECONDS, MAX_SIDE = 32, 3.0, 896
+N_FRAMES, MAX_SIDE = 32, 896
+CLIP_SECONDS = float(os.environ.get("VERIFY_CLIP", 4.0))  # 4 s, as in the offline experiment (verify_alarms.py --clip-len)
 
 
 def gpu(duration):

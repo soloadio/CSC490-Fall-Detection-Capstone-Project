@@ -5,7 +5,7 @@ Run 2026-11-03. Scripts: `verify_alarms.py`, `verify_mv.py`. Outputs: `/scratch/
 ## Setup
 
 VideoMAE "fall only" at the deployed setting (3 s window, k = 1, threshold 0.30) raises alarms on the recordings. For
-each alarm, Gemma 3 12B-it, without (zero-shot) or with the LoRA adapter, looks at 32 frames spanning 3 s and answers
+each alarm, Gemma 3 12B-it, without (zero-shot) or with the LoRA adapter, looks at 32 frames spanning 4 s and answers
 fall / no_fall. The alarm stands if P(fall) >= 0.5. A "kept fall" is a real fall whose alarm survives the check.
 
 ## One camera (test: 136 real-fall alarms, 7 false alarms; val: 115 and 4)
