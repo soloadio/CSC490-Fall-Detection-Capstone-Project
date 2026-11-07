@@ -23,6 +23,7 @@ import re
 import secrets
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -44,7 +45,7 @@ ALERT_TOPICS = {}  # room code -> ntfy topic (in memory: set it again after the 
 ALERTS = ThreadPoolExecutor(max_workers=2)  # network calls never block the frame handler
 
 # Second opinion (verifier.py): env VERIFIERS=gemma turns it on. A VideoMAE alarm then waits VERIFY_WAIT s, every camera's
-# last 3 s go to the vision-language model, and the alarm (banner, beep, push alert) only goes out if the votes confirm.
+# last 4 s (VERIFY_CLIP) go to the vision-language model, and the alarm (banner, beep, push alert) only goes out if the votes confirm.
 VERIFIERS = load_verifiers()
 VERIFY_WAIT = float(os.environ.get("VERIFY_WAIT", 1.0))
 RAW = {}  # session id -> RawBuffer of full-resolution frames (only when verifiers are on)
@@ -77,8 +78,11 @@ def send_alert(topic, title, message):
     body = json.dumps({"topic": topic, "title": title, "message": message, "priority": 5,
                        "tags": ["rotating_light"]}).encode()
     req = urllib.request.Request(NTFY_SERVER, data=body, headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return r.status
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status
+    except urllib.error.HTTPError as e:  # keep ntfy's reason (e.g. 429 rate limit) for the room log
+        raise RuntimeError(f"HTTP {e.code}: {e.read()[:120].decode(errors='replace').strip()}") from None
 
 
 def alert_room(code, message, title=None):
@@ -89,7 +93,7 @@ def alert_room(code, message, title=None):
 
     def done(fut):
         err = fut.exception()
-        note = f"push alert failed ({type(err).__name__})" if err else "push alert sent"
+        note = f"push alert failed ({err})" if err else "push alert sent"
         room = get_room(code)
         room.log.insert(0, f"{time.strftime('%H:%M:%S')}  {note}")
         del room.log[10:]
