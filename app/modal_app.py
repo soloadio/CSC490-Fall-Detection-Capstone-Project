@@ -16,7 +16,7 @@ import modal
 
 APP, VOLUME, MNT = "fall-verifier", "fall-models", "/models"
 BASE_REPO = "google/gemma-3-12b-it"
-BASE, ADAPTER = f"{MNT}/gemma-3-12b-it", f"{MNT}/adapter"
+BASE, ADAPTER = f"{MNT}/gemma-3-12b-it", f"{MNT}/adapter_reasons"  # old adapter (before reason training): f"{MNT}/adapter"
 HERE = Path(__file__).parent
 
 image = (modal.Image.debian_slim(python_version="3.11")
