@@ -123,16 +123,16 @@ class GemmaVerifier:
 
 
 class ModalVerifier:
-    """The same Gemma 3 12B + LoRA check, run on a Modal GPU (modal_app.py). Needs the `modal` package and a Modal token
-    (env MODAL_TOKEN_ID / MODAL_TOKEN_SECRET on a Space, or `modal token new` on the cluster)."""
-    name = "Gemma 3 12B + LoRA"
+    """A checker run on a Modal GPU (modal_app.py): cls "Verifier" is Gemma 3 12B + LoRA, "QwenVerifier" is
+    Qwen2-VL-7B + LoRA. Needs the `modal` package and a Modal token (env MODAL_TOKEN_ID / MODAL_TOKEN_SECRET on a
+    Space, or `modal token new` on the cluster)."""
 
-    def __init__(self, app="fall-verifier"):
-        self.app, self.ready = app, False
+    def __init__(self, app="fall-verifier", cls="Verifier", name="Gemma 3 12B + LoRA"):
+        self.app, self.cls, self.name, self.ready = app, cls, name, False
 
     def load(self):
         import modal
-        self.fn = modal.Cls.from_name(self.app, "Verifier")().check
+        self.fn = modal.Cls.from_name(self.app, self.cls)().check
         self.ready = True
         print(f"{self.name} on Modal ({self.app}) ready", flush=True)
 
@@ -158,7 +158,7 @@ def _cuda():
 
 def load_verifiers():
     """Checkers named in env VERIFIERS (comma separated; default none): gemma (on this machine's GPU) or gemma-modal
-    (on Modal, see modal_app.py; env MODAL_APP). Gemma: GEMMA_BASE (hub id or local folder),
+    (on Modal, see modal_app.py; env MODAL_APP) or qwen-modal (Qwen2-VL-7B + LoRA on Modal), e.g. VERIFIERS=gemma-modal,qwen-modal. Gemma: GEMMA_BASE (hub id or local folder),
     GEMMA_ADAPTER (hub id or local folder, optional), HF_TOKEN (Space secret; Gemma is a gated model)."""
     out = []
     for name in filter(None, (x.strip() for x in os.environ.get("VERIFIERS", "").split(","))):
@@ -167,6 +167,8 @@ def load_verifiers():
                                      os.environ.get("GEMMA_ADAPTER") or None, os.environ.get("HF_TOKEN")))
         elif name == "gemma-modal":
             out.append(ModalVerifier(os.environ.get("MODAL_APP", "fall-verifier")))
+        elif name == "qwen-modal":
+            out.append(ModalVerifier(os.environ.get("MODAL_APP", "fall-verifier"), "QwenVerifier", "Qwen2-VL 7B + LoRA"))
         else:
             raise ValueError(f"unknown verifier {name!r}")
     return out
