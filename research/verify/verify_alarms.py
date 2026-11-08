@@ -191,7 +191,7 @@ def stage_score(a):
     for tag in a.models:
         if tag == "lora":
             from peft import PeftModel
-            model = PeftModel.from_pretrained(model, ADAPTER).merge_and_unload().eval()
+            model = PeftModel.from_pretrained(model, a.adapter).merge_and_unload().eval()
             print("LoRA adapter merged", flush=True)
         out_file = a.out / f"gemma_{tag}{suffix}.jsonl"
         done = {json.loads(l)["clip_id"] for l in open(out_file)} if out_file.exists() else set()
@@ -255,6 +255,7 @@ def main():
     ap.add_argument("--out", type=Path, default=Path("/scratch/wuhungma/verify_gemma"))
     ap.add_argument("--clips", default="clips.jsonl", help="clip list in --out (clips_mv.jsonl: multi-camera clips)")
     ap.add_argument("--clip-len", type=float, default=4.0, help="seconds of video in a clip")
+    ap.add_argument("--adapter", default=ADAPTER, help="LoRA adapter folder for --models lora")
     ap.add_argument("--models", nargs="+", default=["zeroshot", "lora"], choices=["zeroshot", "lora"])
     a = ap.parse_args()
     {"alarms": stage_alarms, "frames": stage_frames, "score": stage_score, "report": stage_report}[a.stage](a)

@@ -7,4 +7,4 @@ Fall detection on the OmniFall datasets (EDF, MCFD, UP-Fall), and a live multi-c
 - `app/`: the Gradio app (VideoMAE alarm, multi-camera rooms, push alerts, optional vision-language second opinion in `verifier.py`).
 - `tests/`: scripts that run the app's real handlers on replayed recordings.
 
-Not in git: datasets, extracted frames and model weights. Scripts contain paths from the Alliance Fir cluster (`/scratch/wuhungma/...`, `/project/6010122/group12/...`); change them to run elsewhere.
+Not in git: datasets, extracted frames and model weights. Trained model files (VideoMAE, Gemma LoRA adapters, Qwen LoRA) are in the private Hugging Face repo [CSC490/fall-models](https://huggingface.co/CSC490/fall-models) (ask to join the CSC490 organization) and on the cluster in `/project/6010122/group12/models/`. Scripts contain paths from the Alliance Fir cluster (`/scratch/wuhungma/...`, `/project/6010122/group12/...`); change them to run elsewhere.

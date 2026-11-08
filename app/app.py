@@ -34,6 +34,16 @@ from detector import AlarmRule, FallModel, FrameBuffer, Room, settings_from_env
 from verifier import RawBuffer, decide, load_verifiers
 
 CFG = settings_from_env()
+MODEL_REPO = os.environ.get("MODEL_REPO", "CSC490/fall-models")  # trained weights (Hugging Face), not in git
+if not os.path.exists(os.path.join(CFG["model_dir"], "model.safetensors")):  # fresh clone: fetch VideoMAE once
+    import shutil
+    import tempfile
+
+    from huggingface_hub import snapshot_download
+    print(f"VideoMAE not found in {CFG['model_dir']}; downloading it from {MODEL_REPO} (videomae/)", flush=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        snapshot_download(MODEL_REPO, allow_patterns=["videomae/*"], local_dir=tmp)
+        shutil.copytree(os.path.join(tmp, "videomae"), CFG["model_dir"], dirs_exist_ok=True)
 MODEL = FallModel(CFG["model_dir"], int8=CFG["int8"], threads=CFG["threads"])
 SHOW_ALARM_FOR = 8.0  # seconds the red banner stays up after an alarm
 STREAM_EVERY = float(os.environ.get("STREAM_EVERY", 0.2))  # 5 frames/s; the model uses 16 frames over 3 s
@@ -74,6 +84,10 @@ def ntfy_topic(text):
     return t if re.fullmatch(r"[A-Za-z0-9_-]{6,64}", t) else ""
 
 
+# env ALERT_TOPIC: every room sends its alerts here unless a topic is set on the dashboard (survives restarts)
+ALERT_TOPIC = ntfy_topic(os.environ.get("ALERT_TOPIC", ""))
+
+
 def send_alert(topic, title, message):
     body = json.dumps({"topic": topic, "title": title, "message": message, "priority": 5,
                        "tags": ["rotating_light"]}).encode()
@@ -87,7 +101,7 @@ def send_alert(topic, title, message):
 
 def alert_room(code, message, title=None):
     """Send a push alert for room `code` in the background; the outcome goes to the room's alarm log."""
-    topic = ALERT_TOPICS.get(code)
+    topic = ALERT_TOPICS.get(code) or ALERT_TOPIC
     if not topic:
         return
 
@@ -119,20 +133,26 @@ def run_check(cams):
     """cams {session id: camera name} -> list of reports, one per (checker, camera). Waits VERIFY_WAIT s first, so the
     clip also shows the moments after the alarm (what the offline experiment found works best)."""
     time.sleep(VERIFY_WAIT)
-    t_end, reports = time.monotonic(), []
+    t_end, jobs = time.monotonic(), []
     for sid, name in cams.items():
         raw = RAW.get(sid)
         frames = raw.clip(t_end) if raw else None
-        if frames is None:
-            reports.append({"camera": name, "verifier": "-", "reason": "no recent video from this camera"})
-            continue
-        for v in VERIFIERS:
-            try:
-                if not v.ready:
-                    raise RuntimeError("model still loading")
-                reports.append({"camera": name, **v.check(frames)})
-            except Exception as e:  # noqa: BLE001 - a failed check must not hide an alarm
-                reports.append({"camera": name, "verifier": v.name, "reason": f"check failed ({type(e).__name__})"})
+        jobs += [(name, v, frames) for v in VERIFIERS] if frames is not None else [(name, None, None)]
+
+    def one(job):
+        name, v, frames = job
+        if v is None:
+            return {"camera": name, "verifier": "-", "reason": "no recent video from this camera"}
+        try:
+            if not v.ready:
+                raise RuntimeError("model still loading")
+            return {"camera": name, **v.check(frames)}
+        except Exception as e:  # noqa: BLE001 - a failed check must not hide an alarm
+            return {"camera": name, "verifier": v.name, "reason": f"check failed ({type(e).__name__})"}
+
+    # every (camera, checker) pair at once: Gemma and Qwen run on separate Modal GPUs, so they answer in parallel
+    with ThreadPoolExecutor(max_workers=max(1, len(jobs))) as pool:
+        reports = list(pool.map(one, jobs))
     return reports
 
 
@@ -183,15 +203,19 @@ def warm_checker():
     if not VERIFIERS:
         return "Second opinion is off (no VERIFIERS set)."
     from PIL import Image
-    frames, out = [Image.new("RGB", (320, 240), (128, 128, 128))] * 32, []
-    for v in VERIFIERS:
+    frames = [Image.new("RGB", (320, 240), (128, 128, 128))] * 32
+
+    def one(v):
         try:
             if not v.ready:
                 raise RuntimeError("still loading")
             r = v.check(frames)
-            out.append(f"{v.name}: ready, answered in {r['seconds']:.0f} s (test clip: {r['verdict']}, \"{r['reason']}\")")
+            return f"{v.name}: ready, answered in {r['seconds']:.0f} s (test clip: {r['verdict']}, \"{r['reason']}\")"
         except Exception as e:  # noqa: BLE001
-            out.append(f"{v.name}: NOT working ({type(e).__name__}: {str(e)[:150]})")
+            return f"{v.name}: NOT working ({type(e).__name__}: {str(e)[:150]})"
+
+    with ThreadPoolExecutor(max_workers=len(VERIFIERS)) as pool:  # wake every checker at the same time
+        out = list(pool.map(one, VERIFIERS))
     return "\n".join(out)
 
 
@@ -353,7 +377,7 @@ def from_url(request: gr.Request):
     alert topic (or the room's current one)."""
     q = request.query_params if request else {}
     room = q.get("room", "")
-    topic = q.get("alert", "") or ALERT_TOPICS.get(room_code(room), "") or f"fall-alert-{secrets.token_hex(4)}"
+    topic = q.get("alert", "") or ALERT_TOPICS.get(room_code(room), "") or ALERT_TOPIC or f"fall-alert-{secrets.token_hex(4)}"
     return room, q.get("cam", ""), room, topic
 
 

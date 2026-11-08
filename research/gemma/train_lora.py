@@ -9,6 +9,11 @@ with  run_probs.py --adapter <out>/adapter.
 Only the language model gets LoRA (attention + MLP projections); the vision tower and projector
 stay frozen. --qlora loads the frozen model in 4-bit NF4 so it fits a 40 GB GPU slice.
 
+--reasons <jsonl> (make_reasons.py): the answer continues with the clip's evidence sentence and occlusion flag,
+{"verdict": "fall", "evidence": "...", "occlusion_flag": false}<end_of_turn>, and the loss adds
+--reason-weight x (mean cross-entropy over those extra tokens) to the unchanged label loss. Clips without a reason
+keep the label-only loss.
+
 Resumable: every --save-every optimizer steps the adapter, optimizer and position are saved to
 <out>/checkpoint; re-running the same command continues from there.
 
@@ -36,7 +41,7 @@ MODEL = "/home/wuhungma/scratch/models/gemma-3-12b-it"
 TARGETS = r".*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)"
 
 
-def load_clips(manifest, k):
+def load_clips(manifest, k, reasons=None):
     idx = [round(j * 31 / (k - 1)) for j in range(k)]
     clips = []
     with open(manifest) as f:
@@ -44,8 +49,10 @@ def load_clips(manifest, k):
             e = json.loads(line)
             target = "fall" if e["label_name"] in gs.POSITIVE_GOLD else "no_fall"
             for cam, v in e["cams"].items():
+                r = (reasons or {}).get(f"{e['event_id']}#cam{cam}")
                 clips.append({"event_id": e["event_id"], "dataset": e["dataset"], "cam": cam,
-                              "frames": [v["frames"][i] for i in idx], "target": target})
+                              "frames": [v["frames"][i] for i in idx], "target": target,
+                              "reason": r if r and r.get("evidence") else None})
     return clips
 
 
@@ -54,6 +61,22 @@ class ClipDataset(torch.utils.data.Dataset):
 
     def __init__(self, clips, processor, plan, pre):
         self.clips, self.processor, self.plan, self.pre = clips, processor, plan, pre
+        self.tok = processor.tokenizer
+        self.eot = self.tok.convert_tokens_to_ids("<end_of_turn>")
+
+    def rest_tokens(self, c):
+        """Tokens of the answer after the label: '", "evidence": "...", "occlusion_flag": x}<end_of_turn>'.
+        The label tokens stay exactly those that run_probs.py scores; None if the tokenizer would merge them."""
+        r = c["reason"]
+        if not r:
+            return []
+        ev = json.dumps(r["evidence"])[1:-1]  # JSON-escaped, without the outer quotes
+        tail = f'", "evidence": "{ev}", "occlusion_flag": {"true" if r["occlusion_flag"] else "false"}}}'
+        full = self.tok.encode(gs.PREFIX + c["target"] + tail, add_special_tokens=False)
+        head = self.pre + self.plan[c["target"]]
+        if full[:len(head)] != head:
+            return []
+        return full[len(head):] + [self.eot]
 
     def __len__(self):
         return len(self.clips)
@@ -63,23 +86,29 @@ class ClipDataset(torch.utils.data.Dataset):
         inp = self.processor.apply_chat_template(gs.messages_for(c["frames"]), add_generation_prompt=True,
                                                  tokenize=True, return_dict=True, return_tensors="pt")
         cont = self.plan[c["target"]]
-        extra = torch.tensor([self.pre + cont])
+        rest = self.rest_tokens(c)
+        extra = torch.tensor([self.pre + cont + rest])
         out = {"input_ids": torch.cat([inp["input_ids"], extra], 1), "pixel_values": inp["pixel_values"],
-               "n_label": len(cont)}
+               "n_label": len(cont), "n_rest": len(rest)}
         if "token_type_ids" in inp:
             out["token_type_ids"] = torch.cat([inp["token_type_ids"], torch.zeros_like(extra)], 1)
         return out
 
 
-def label_loss(model, batch, device):
+def label_loss(model, batch, device, reason_weight=0.5):
+    """Cross-entropy on the label tokens, plus reason_weight x mean cross-entropy on the reason tokens (if any)."""
     ids = batch["input_ids"].to(device)
-    n = batch["n_label"]
+    n, m = batch["n_label"], batch.get("n_rest", 0)
     kw = dict(input_ids=ids, attention_mask=torch.ones_like(ids),
-              pixel_values=batch["pixel_values"].to(device, torch.bfloat16), logits_to_keep=n + 1)
+              pixel_values=batch["pixel_values"].to(device, torch.bfloat16), logits_to_keep=n + m + 1)
     if "token_type_ids" in batch:
         kw["token_type_ids"] = batch["token_type_ids"].to(device)
-    logits = model(**kw).logits[0, :n].float()      # position t predicts token t+1
-    return torch.nn.functional.cross_entropy(logits, ids[0, -n:])
+    logits = model(**kw).logits[0, :n + m].float()  # position t predicts token t+1
+    targets = ids[0, -(n + m):]
+    loss = torch.nn.functional.cross_entropy(logits[:n], targets[:n])
+    if m:
+        loss = loss + reason_weight * torch.nn.functional.cross_entropy(logits[n:], targets[n:])
+    return loss
 
 
 def main():
@@ -98,6 +127,8 @@ def main():
     ap.add_argument("--save-every", type=int, default=25, help="optimizer steps between checkpoints")
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--reasons", type=Path, help="make_reasons.py output: also train the evidence sentence")
+    ap.add_argument("--reason-weight", type=float, default=0.5)
     args = ap.parse_args()
 
     from peft import LoraConfig, PeftModel, get_peft_model
@@ -121,7 +152,8 @@ def main():
     ckpt = args.out / "checkpoint"
     torch.manual_seed(args.seed)  # same LoRA init on every GPU
 
-    clips = load_clips(args.train, args.k)
+    reasons = {json.loads(l)["clip_id"]: json.loads(l) for l in open(args.reasons)} if args.reasons else None
+    clips = load_clips(args.train, args.k, reasons)
     random.Random(args.seed).shuffle(clips)
     total_steps = math.ceil(len(clips) * args.epochs / args.grad_accum)
     if args.max_steps:
@@ -129,7 +161,8 @@ def main():
     n_micro = total_steps * args.grad_accum  # whole mini-batches only, so every GPU gets the same count
     n_pos = sum(c["target"] == "fall" for c in clips)
     log(f"train clips {len(clips)} ({n_pos} fall, {len(clips) - n_pos} no_fall), "
-        f"{total_steps} optimizer steps x {args.grad_accum} clips, {world} GPU(s)", flush=True)
+        f"{total_steps} optimizer steps x {args.grad_accum} clips, {world} GPU(s)"
+        + (f", {sum(c['reason'] is not None for c in clips)} with a reason" if reasons else ""), flush=True)
 
     processor = AutoProcessor.from_pretrained(MODEL)
     pre, plan, bad = gs.label_plan(processor.tokenizer)
@@ -168,7 +201,8 @@ def main():
     if rank == 0:
         (args.out / "config.json").write_text(json.dumps(
             {**vars(args), "out": str(args.out), "train": str(args.train), "model": MODEL, "targets": TARGETS,
-             "n_clips": len(clips), "total_steps": total_steps, "gpus": world}, indent=1))
+             "n_clips": len(clips), "total_steps": total_steps, "gpus": world,
+             "reasons": str(args.reasons) if args.reasons else None}, indent=1))
 
     # global micro-batch i goes to GPU i % world
     order = [clips[i % len(clips)] for i in range(n_micro)][state["micro"]:][rank::world]
@@ -190,7 +224,7 @@ def main():
     for batch in loader:
         if state["step"] >= total_steps:
             break
-        loss = label_loss(model, batch, device) / args.grad_accum
+        loss = label_loss(model, batch, device, args.reason_weight) / args.grad_accum
         loss.backward()
         acc_loss += loss.item()
         n_local += 1
