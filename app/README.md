@@ -71,7 +71,9 @@ Trained weights are not in git; they are in the Hugging Face repo
 
 **1. Accounts (once)**
 - Hugging Face: an account and a [token](https://huggingface.co/settings/tokens) (read is enough); open
-  [google/gemma-3-12b-it](https://huggingface.co/google/gemma-3-12b-it) and accept the Gemma terms with that account.
+  [google/gemma-3-12b-it](https://huggingface.co/google/gemma-3-12b-it) and accept the Gemma terms with that account,
+  then open [CSC490/fall-models](https://huggingface.co/CSC490/fall-models) and press *Agree and access* (approved at
+  once). Log in on your machine with `hf auth login` (or set `HF_TOKEN`) so the downloads below can use it.
 - [Modal](https://modal.com) (free Starter plan: $30 of GPU credit a month). Set a spending limit in its billing settings.
 - Optional, for push alerts: the free [ntfy](https://ntfy.sh) app on your phone.
 
