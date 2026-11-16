@@ -174,8 +174,39 @@ def load_verifiers():
     return out
 
 
-def decide(reports):
-    """Combine the votes of all (checker, camera) pairs: the alarm stands if at least half say fall (a tie keeps the
-    alarm: a missed fall is worse than a false alarm). No reports (checker failed): keep the alarm."""
-    votes = [r["verdict"] == "fall" for r in reports if "verdict" in r]
-    return not votes or sum(votes) * 2 >= len(votes)
+# A checker that describes "no visible movement / remains in the same position" while VideoMAE on some camera just
+# raised an alarm most likely cannot see the person (blocked view). Offline (research/verify/occlusion_exp.py): never
+# said about a visible real fall (0/206 clips), said by Gemma or Qwen about 105/206 falls on a blocked camera.
+NO_MOVEMENT = re.compile(
+    r"no (visible|noticeable|apparent|significant) (movement|change)|without any (noticeable |visible |apparent )?"
+    r"movement|minimal movement|(remains?|stays?) (standing |seated |lying )?(in )?(roughly )?(the same|that) "
+    r"(position|location|spot)|does not move|do not move|showing no movement", re.I)
+
+
+def camera_weights(reports):
+    """{camera: weight}. A camera whose checkers say the person did not move gets weight 0 (it probably cannot see
+    them); every other camera 1. decide() then only listens to the cameras with weight 1."""
+    w = {}
+    for r in reports:
+        if "verdict" in r:
+            still = bool(NO_MOVEMENT.search(r.get("reason", "")))
+            w[r["camera"]] = 0.0 if still or w.get(r["camera"]) == 0.0 else 1.0
+    return w
+
+
+def decide(reports, tau=0.5):
+    """Keep the alarm if a checker on a camera that can see the person (camera_weights 1) says fall (P >= tau): the
+    cameras that can see decide, and on them one confident checker is enough (a missed fall is worse than a false
+    alarm). If no camera can see (all weight 0), any checker on any camera. No reports (every check failed): keep.
+
+    Offline (research/verify/occlusion_exp.py, test split, falls kept / false alarms kept), against the old rule
+    ">= half of all (camera, checker) votes, a tie keeps":
+      one camera blocked   111/115, 1/6   (old 108/115, 1/6)
+      no occlusion          54/55,  1/4   (old  54/55,  1/4)
+      single camera        134/136, 2/7   (old 134/136, 2/7; with one camera the two rules are the same)"""
+    rs = [r for r in reports if "verdict" in r]
+    if not rs:
+        return True
+    w = camera_weights(rs)
+    seeing = [r for r in rs if w[r["camera"]] > 0] or rs
+    return any(r["p_fall"] >= tau for r in seeing)
