@@ -20,8 +20,8 @@ import modal
 APP, VOLUME, MNT = "fall-verifier", "fall-models", "/models"
 BASE_REPO = "google/gemma-3-12b-it"
 QWEN_REPO, MODEL_REPO = "Qwen/Qwen2-VL-7B-Instruct", "CSC490/fall-models"  # MODEL_REPO: our trained adapters
-QWEN_BASE, QWEN_ADAPTER = f"{MNT}/qwen2-vl-7b-instruct", f"{MNT}/qwen_adapter"
-BASE, ADAPTER = f"{MNT}/gemma-3-12b-it", f"{MNT}/adapter_reasons"  # old adapter (before reason training): f"{MNT}/adapter"
+QWEN_BASE, QWEN_ADAPTER = f"{MNT}/qwen2-vl-7b-instruct", f"{MNT}/qwen_adapter_v3_syn"  # before 15 Nov: qwen_adapter_reasons (78000 px, verdict first)
+BASE, ADAPTER = f"{MNT}/gemma-3-12b-it", f"{MNT}/adapter_reasons_syn"  # + OF-Syn lie-downs (15 Nov); before: adapter_reasons, adapter
 HERE = Path(__file__).parent
 
 packages = (modal.Image.debian_slim(python_version="3.11")
@@ -65,7 +65,7 @@ def download_qwen():
 
 @app.function(volumes={MNT: volume}, secrets=[modal.Secret.from_name("huggingface-secret")], timeout=1800)
 def download_adapters():
-    """Our LoRA adapters from MODEL_REPO into the volume: gemma/adapter_reasons -> ADAPTER, qwen/r16_all3 -> QWEN_ADAPTER."""
+    """Our LoRA adapters from MODEL_REPO into the volume: gemma/adapter_reasons -> ADAPTER, qwen/r16_reasons -> QWEN_ADAPTER."""
     import os
     import shutil
     import tempfile
@@ -74,8 +74,8 @@ def download_adapters():
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
     with tempfile.TemporaryDirectory() as tmp:
         snapshot_download(MODEL_REPO, local_dir=tmp, token=token,
-                          allow_patterns=["gemma/adapter_reasons/*", "qwen/r16_all3/*"])
-        for src, dst in ((f"{tmp}/gemma/adapter_reasons", ADAPTER), (f"{tmp}/qwen/r16_all3", QWEN_ADAPTER)):
+                          allow_patterns=["gemma/adapter_reasons/*", "qwen/r16_reasons/*"])
+        for src, dst in ((f"{tmp}/gemma/adapter_reasons", ADAPTER), (f"{tmp}/qwen/r16_reasons", QWEN_ADAPTER)):
             shutil.copytree(src, dst, dirs_exist_ok=True)
             print(dst, sorted(p.name for p in Path(dst).iterdir()))
     volume.commit()
@@ -124,12 +124,12 @@ class Verifier:
 
 @app.cls(gpu="L40S", image=qwen_image, volumes={MNT: volume}, timeout=600, scaledown_window=300, max_containers=1)
 class QwenVerifier:
-    """Qwen2-VL-7B-Instruct + Solomon's LoRA: same prompt, forced prefix and P(fall) as Verifier (qwen_scoring.py)."""
+    """Qwen2-VL-7B-Instruct + LoRA (qwen/r16_reasons, trained with evidence sentences): same prompt, forced prefix and P(fall) as Verifier (qwen_scoring.py)."""
 
     @modal.enter()
     def load(self):
         from qwen_scoring import QwenScorer
-        self.qs = QwenScorer(QWEN_BASE, QWEN_ADAPTER).load()
+        self.qs = QwenScorer(QWEN_BASE, QWEN_ADAPTER, max_pixels=345600, evidence_first=True).load()  # qwen_v3_syn
 
     @modal.method()
     def check(self, jpegs):

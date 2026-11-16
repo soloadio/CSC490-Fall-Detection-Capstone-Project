@@ -48,6 +48,21 @@ Qwen2-VL needs `mm_token_type_ids` from the processor for its 3-D rotary positio
 appended after the prompt. When decoding from a KV cache, transformers builds position ids from the full attention
 mask, so `score_labels` passes them explicitly (cache length + the stored `rope_deltas`).
 
+## Training with reasons
+
+`train_lora_qwen.py --reasons <reasons.jsonl>` also trains the evidence sentence (loss = label + 0.5 x reason tokens),
+with the same reasons file as the Gemma reasons adapter (`../gemma/make_reasons.py`):
+
+```bash
+sbatch train_qwen_reasons.sbatch --out /scratch/wuhungma/lora/qwen_r16_reasons      # ~1 h on one H100
+sbatch eval_qwen_reasons.sbatch                                                      # alarm clips + round-2 test
+```
+
+On the VideoMAE alarm clips (clip ending 1 s after the alarm, threshold 0.5) it keeps 112/115 (val) and 133/136 (test)
+real falls (verdict-only r16_all3: 111/115, 132/136), removes the same false alarms, and its evidence sentences describe
+the whole clip instead of the last frame. It is the Qwen checker in the app.
+
 ## Weights
 
-Not in git (see `.gitignore`). The LoRA adapter (161 MB) is at `/home/soloadio/qwen/lora/r16_all3/adapter` on the cluster.
+Not in git (see `.gitignore`). Both adapters are in the Hugging Face repo `CSC490/fall-models`: `qwen/r16_reasons`
+(current) and `qwen/r16_all3` (Solomon's verdict-only adapter, also at `/home/soloadio/qwen/lora/r16_all3/adapter`).

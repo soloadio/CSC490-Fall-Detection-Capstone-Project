@@ -9,6 +9,16 @@ The base model is never written to: only the small adapter is saved under --out.
 Resumable: every --save-every optimizer steps the adapter, optimizer and position go to <out>/checkpoint.
 Single GPU.
 
+--reasons <jsonl> (gemma/make_reasons.py, the same file as the Gemma reasons adapter): the answer continues with the
+clip's evidence sentence and occlusion flag, {"verdict": "fall", "evidence": "...", "occlusion_flag": false}<|im_end|>,
+and the loss adds --reason-weight x (mean cross-entropy over those extra tokens) to the unchanged label loss, as in
+gemma/train_lora.py. Clips without a reason keep the label-only loss.
+
+--evidence-first (needs --reasons): the answer is {"evidence": "...", "verdict": "fall", "occlusion_flag": false}<|im_end|>
+with the evidence-first instruction of app/qwen_scoring.py, so the verdict is predicted AFTER the model has described
+the clip. Loss: cross-entropy on the label tokens + --reason-weight x mean cross-entropy on all other answer tokens.
+Score such an adapter with QwenScorer(..., evidence_first=True) (verify_qwen.py --evidence-first).
+
     python train_lora_qwen.py --out ~/qwen/lora/r16 --max-steps 5      # feasibility test
     python train_lora_qwen.py --out ~/qwen/lora/r16
 """
@@ -21,12 +31,14 @@ GROUP = "/project/def-ajbonner/group12"
 sys.dont_write_bytecode = True                                 # never create __pycache__ inside group12
 sys.path.insert(0, GROUP)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gemma"))  # in the repo: research/gemma/ (same prompt files)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "app"))  # qwen_scoring.py: evidence-first prompt
 import gemma_binary_scoring as gs  # noqa: E402
+import qwen_scoring as qsc  # noqa: E402
 
 TARGETS = r".*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)"
 
 
-def load_clips(manifest, k, datasets):
+def load_clips(manifest, k, datasets, reasons=None):
     idx = [round(j * 31 / (k - 1)) for j in range(k)]
     clips = []
     for line in open(manifest):
@@ -35,40 +47,97 @@ def load_clips(manifest, k, datasets):
             continue
         target = "fall" if e["label_name"] in gs.POSITIVE_GOLD else "no_fall"
         for cam, v in e["cams"].items():
+            r = (reasons or {}).get(f"{e['event_id']}#cam{cam}")
             clips.append({"event_id": e["event_id"], "dataset": e["dataset"], "cam": cam,
-                          "frames": [v["frames"][i] for i in idx], "target": target})
+                          "frames": [v["frames"][i] for i in idx], "target": target,
+                          "reason": r if r and r.get("evidence") else None})
     return clips
 
 
 class ClipDataset(torch.utils.data.Dataset):
     """Builds the full token sequence prompt + prefix + label, on CPU workers."""
 
-    def __init__(self, clips, processor, plan, pre):
+    def __init__(self, clips, processor, plan, pre, evidence_first=False):
         self.clips, self.processor, self.plan, self.pre = clips, processor, plan, pre
+        self.evidence_first = evidence_first
+        self.tok = processor.tokenizer
+        self.eot = self.tok.convert_tokens_to_ids("<|im_end|>")
+
+    def rest_tokens(self, c):
+        """Tokens of the answer after the label: '", "evidence": "...", "occlusion_flag": x}<|im_end|>'.
+        The label tokens stay exactly those that run_probs_qwen.py scores; [] if the tokenizer would merge them."""
+        r = c.get("reason")
+        if not r:
+            return []
+        ev = json.dumps(r["evidence"])[1:-1]  # JSON-escaped, without the outer quotes
+        tail = f'", "evidence": "{ev}", "occlusion_flag": {"true" if r["occlusion_flag"] else "false"}}}'
+        full = self.tok.encode(gs.PREFIX + c["target"] + tail, add_special_tokens=False)
+        head = self.pre + self.plan[c["target"]]
+        if full[:len(head)] != head:
+            return []
+        return full[len(head):] + [self.eot]
 
     def __len__(self):
         return len(self.clips)
 
+    def ef_tokens(self, c):
+        """Evidence-first answer tokens and where the label tokens are in them: (ids, label_start, label_len)."""
+        r = c.get("reason") or {"evidence": "", "occlusion_flag": False}
+        head = qsc.EF_PREFIX + json.dumps(r["evidence"])[1:-1] + qsc.VERDICT_KEY
+        h = self.tok.encode(head, add_special_tokens=False)
+        lab = self.tok.encode(head + c["target"], add_special_tokens=False)
+        tail = f'", "occlusion_flag": {"true" if r["occlusion_flag"] else "false"}}}'
+        full = self.tok.encode(head + c["target"] + tail, add_special_tokens=False)
+        assert full[:len(lab)] == lab and lab[:len(h)] == h, c["event_id"]
+        return full + [self.eot], len(h), len(lab) - len(h)
+
     def __getitem__(self, i):
         c = self.clips[i]
+        if self.evidence_first:
+            inp = self.processor.apply_chat_template(qsc.messages(c["frames"], True), add_generation_prompt=True,
+                                                     tokenize=True, return_dict=True, return_tensors="pt")
+            ids, ls, ln = self.ef_tokens(c)
+            extra = torch.tensor([ids])
+            out = {"input_ids": torch.cat([inp["input_ids"], extra], 1), "pixel_values": inp["pixel_values"],
+                   "image_grid_thw": inp["image_grid_thw"], "n_extra": len(ids), "label_start": ls, "label_len": ln}
+            for k, v in inp.items():
+                if "token_type_ids" in k:
+                    out[k] = torch.cat([v, torch.zeros_like(extra, dtype=v.dtype)], 1)
+            return out
         inp = self.processor.apply_chat_template(gs.messages_for(c["frames"]), add_generation_prompt=True,
                                                  tokenize=True, return_dict=True, return_tensors="pt")
-        extra = torch.tensor([self.pre + self.plan[c["target"]]])
+        rest = self.rest_tokens(c)
+        extra = torch.tensor([self.pre + self.plan[c["target"]] + rest])
         out = {"input_ids": torch.cat([inp["input_ids"], extra], 1), "pixel_values": inp["pixel_values"],
-               "image_grid_thw": inp["image_grid_thw"], "n_label": len(self.plan[c["target"]])}
+               "image_grid_thw": inp["image_grid_thw"], "n_label": len(self.plan[c["target"]]), "n_rest": len(rest)}
         for k, v in inp.items():                               # mm_token_type_ids (M-RoPE): text = 0 for appended tokens
             if "token_type_ids" in k:
                 out[k] = torch.cat([v, torch.zeros_like(extra, dtype=v.dtype)], 1)
         return out
 
 
-def label_loss(model, batch, device):
+def label_loss(model, batch, device, reason_weight=0.5):
+    """Cross-entropy on the label tokens, plus reason_weight x mean cross-entropy on the reason tokens (if any)."""
     ids = batch["input_ids"].to(device)
-    n = batch["n_label"]
+    if "n_extra" in batch:  # evidence first: label tokens sit inside the answer
+        e, ls, ln = batch["n_extra"], batch["label_start"], batch["label_len"]
+        kw = {k: v.to(device) for k, v in batch.items() if "token_type_ids" in k}
+        logits = model(input_ids=ids, attention_mask=torch.ones_like(ids),
+                       pixel_values=batch["pixel_values"].to(device, torch.bfloat16),
+                       image_grid_thw=batch["image_grid_thw"].to(device), logits_to_keep=e + 1, **kw).logits[0, :e].float()
+        ce = torch.nn.functional.cross_entropy(logits, ids[0, -e:], reduction="none")
+        is_label = torch.zeros(e, dtype=torch.bool, device=device)
+        is_label[ls:ls + ln] = True
+        return ce[is_label].mean() + reason_weight * ce[~is_label].mean()
+    n, m = batch["n_label"], batch.get("n_rest", 0)
     kw = {k: v.to(device) for k, v in batch.items() if "token_type_ids" in k}
     logits = model(input_ids=ids, attention_mask=torch.ones_like(ids), pixel_values=batch["pixel_values"].to(device, torch.bfloat16),
-                   image_grid_thw=batch["image_grid_thw"].to(device), logits_to_keep=n + 1, **kw).logits[0, :n].float()
-    return torch.nn.functional.cross_entropy(logits, ids[0, -n:])   # position t predicts token t+1
+                   image_grid_thw=batch["image_grid_thw"].to(device), logits_to_keep=n + m + 1, **kw).logits[0, :n + m].float()
+    targets = ids[0, -(n + m):]                                    # position t predicts token t+1
+    loss = torch.nn.functional.cross_entropy(logits[:n], targets[:n])
+    if m:
+        loss = loss + reason_weight * torch.nn.functional.cross_entropy(logits[n:], targets[n:])
+    return loss
 
 
 def main():
@@ -89,6 +158,9 @@ def main():
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--max-pixels", type=int, default=78000, help="cap on pixels per frame (must match evaluation)")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--reasons", type=Path, help="gemma/make_reasons.py output: also train the evidence sentence")
+    ap.add_argument("--reason-weight", type=float, default=0.5)
+    ap.add_argument("--evidence-first", action="store_true", help="answer = evidence, then verdict (see above)")
     args = ap.parse_args()
 
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -99,7 +171,8 @@ def main():
     ckpt = args.out / "checkpoint"
     torch.manual_seed(args.seed)
 
-    clips = load_clips(args.train, args.k, set(args.datasets.split(",")))
+    reasons = {json.loads(l)["clip_id"]: json.loads(l) for l in open(args.reasons)} if args.reasons else None
+    clips = load_clips(args.train, args.k, set(args.datasets.split(",")), reasons)
     random.Random(args.seed).shuffle(clips)
     total_steps = math.ceil(len(clips) * args.epochs / args.grad_accum)
     if args.max_steps:
@@ -107,7 +180,8 @@ def main():
     n_micro = total_steps * args.grad_accum
     n_pos = sum(c["target"] == "fall" for c in clips)
     print(f"train clips {len(clips)} ({n_pos} fall, {len(clips) - n_pos} no_fall) from {args.datasets}, "
-          f"{total_steps} optimizer steps x {args.grad_accum} clips", flush=True)
+          f"{total_steps} optimizer steps x {args.grad_accum} clips"
+          + (f", {sum(c['reason'] is not None for c in clips)} with a reason" if reasons else ""), flush=True)
 
     processor = AutoProcessor.from_pretrained(args.model)
     processor.image_processor.size["longest_edge"] = args.max_pixels
@@ -140,10 +214,11 @@ def main():
 
     (args.out / "config.json").write_text(json.dumps(
         {**vars(args), "out": str(args.out), "train": str(args.train), "targets": TARGETS,
-         "n_clips": len(clips), "total_steps": total_steps}, indent=1))
+         "n_clips": len(clips), "total_steps": total_steps,
+         "reasons": str(args.reasons) if args.reasons else None}, indent=1))
 
     order = [clips[i % len(clips)] for i in range(n_micro)][state["micro"]:]
-    loader = torch.utils.data.DataLoader(ClipDataset(order, processor, plan, pre), batch_size=None,
+    loader = torch.utils.data.DataLoader(ClipDataset(order, processor, plan, pre, args.evidence_first), batch_size=None,
                                          shuffle=False, num_workers=args.workers, prefetch_factor=2)
 
     def save(dest):
@@ -158,7 +233,7 @@ def main():
     for batch in loader:
         if state["step"] >= total_steps:
             break
-        loss = label_loss(model, batch, device) / args.grad_accum
+        loss = label_loss(model, batch, device, args.reason_weight) / args.grad_accum
         loss.backward()
         acc_loss += loss.item()
         n_local += 1

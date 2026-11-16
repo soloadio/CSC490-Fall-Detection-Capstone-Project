@@ -22,8 +22,9 @@ sees a person fall.
 - **Privacy:** frames are kept in memory for a few seconds to fill the window and are never written to disk.
 
 **Several cameras, one room:** open the page on each phone and type the same room code (or use a link like
-`https://ggfggf1234560-fall-detector.hf.space/?room=lab&cam=door`). With two or more cameras the room alarms only when
-two cameras see a fall within 1 s; with one camera it uses the single-camera rule. The *Room dashboard* tab shows the
+`https://ggfggf1234560-fall-detector.hf.space/?room=lab&cam=door`). Without checkers (`VERIFIERS` empty), a room with
+two or more cameras alarms only when two cameras see a fall within 1 s; with one camera it uses the single-camera rule.
+With checkers on, one camera is enough to start a check of every camera (`TRIGGER`, see below). The *Room dashboard* tab shows the
 room from a laptop. On the paired test recordings, "two agree" caught 94% of falls (single camera 92%) with 2 false
 alarms instead of 24. Each extra camera adds one model run per check, so the server is busier with more phones.
 
@@ -36,7 +37,8 @@ restarts (the hosted Space uses `fall-alert`).
 Tips: show the whole body, place the camera high and a few metres away (like the training cameras).
 
 Settings can be changed with environment variables: `WINDOW` (3.0), `THRESHOLD` (0.30), `K` (1), `COOLDOWN` (10),
-`AGREE` (1.0, seconds two cameras have to agree within), `INFER_EVERY` (0.5), `STREAM_EVERY` (0.2, i.e. 5 frames/s sent by the browser), `INT8` (1), `THREADS`, `NTFY_SERVER` (https://ntfy.sh),
+`AGREE` (1.0, seconds two cameras have to agree within), `TRIGGER` (`one` with checkers, else `two`: how many cameras
+must see a fall before the room alarms or checks), `INFER_EVERY` (0.5), `STREAM_EVERY` (0.2, i.e. 5 frames/s sent by the browser), `INT8` (1), `THREADS`, `NTFY_SERVER` (https://ntfy.sh),
 `ALERT_TOPIC`, `VERIFIERS`, `VERIFY_CLIP` (4.0).
 
 **Not a medical device.** Research prototype for a course project.
@@ -48,21 +50,32 @@ Licences: the VideoMAE pretrained weights and the OmniFall annotations are relea
 
 When VideoMAE raises an alarm the app waits 1 s, cuts a 4 s clip (32 frames) from every camera in the room and asks
 each checker in `VERIFIERS` (comma separated) whether it shows a fall; all (camera, checker) pairs run at the same time.
-The alarm goes out if at least half of the votes say fall (a tie keeps the alarm; a failed check never cancels one),
-and each checker's reason is shown in the room log and the push alert.
+The cameras that can see the person decide: a camera whose checkers describe "no visible movement / remains in the
+same position" (right after VideoMAE on some camera saw a fall) is taken to be blocked and is not counted, and the
+alarm goes out if any checker on a camera that can see says fall (if no camera can see, any checker on any camera). A
+failed check never cancels an alarm. Each checker's reason is shown in the room log, with blocked cameras marked.
+
+Why: with one camera blocked by a fake occluder (`research/verify/occlusion_exp.py`, `room_rules.py`), requiring two
+cameras to agree kept 8/115 test falls; one camera triggering the check with the old vote (at least half, tie keeps)
+kept 108/115; this rule keeps 111/115 with the same false alarms (1/6), and is unchanged without occlusion (54/55,
+1/4) and with a single camera (134/136, 2/7). The "no movement" text is never written about a visible real fall but
+only catches about half of the blocked cameras, and the false-alarm counts here are small; real recordings with a
+camera behind furniture are the next test.
 
 | `VERIFIERS` value | Checker | Where |
 |---|---|---|
 | `gemma-modal` | Gemma 3 12B-it + LoRA (trained on verdict + reason) | Modal GPU, class `Verifier` in `modal_app.py` |
-| `qwen-modal` | Qwen2-VL-7B-Instruct + LoRA (Solomon) | Modal GPU, class `QwenVerifier` (`qwen_scoring.py`) |
+| `qwen-modal` | Qwen2-VL-7B-Instruct + LoRA (trained on verdict + reason) | Modal GPU, class `QwenVerifier` (`qwen_scoring.py`) |
 | `gemma` | Gemma on the machine running the app (needs a large GPU) | `verifier.py` |
 
 The hosted Space uses `VERIFIERS=gemma-modal,qwen-modal` and the secrets `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`.
 Setup of the Modal side is at the top of `modal_app.py`. Each Modal GPU stays on 5 minutes after its last check
 (cold start about 45 s); the dashboard's *Wake up checker* button loads both before a test.
 
-On the offline VideoMAE alarm clips (one camera, `research/verify/`), Gemma + Qwen keep 113/115 (val) and 133/136 (test)
-real falls and remove 2/4 and 5/7 false alarms; Gemma alone keeps 103/115 and 131/136.
+On the offline VideoMAE alarm clips (one camera, `research/verify/`), Gemma + Qwen keep 114/115 (val) and 134/136 (test)
+real falls and remove 2/4 and 5/7 false alarms; Gemma alone keeps 103/115 and 131/136. Qwen's adapter is
+`qwen/r16_reasons` (trained with the same reason sentences as Gemma's; Solomon's verdict-only `qwen/r16_all3` kept 113/115
+and 133/136 in the same setup, and wrote reasons about the last frame only).
 
 ## Set up from scratch
 

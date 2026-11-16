@@ -20,10 +20,18 @@ Usage:
     python3 train_videomae.py --out ... --test       # also score test with the chosen epoch
     python3 train_videomae.py --out ... --datasets edf mcfd --test   # held-out-dataset test
     python3 train_videomae.py --out ... --predict-only   # test predictions from an already-trained <out>/best
+    python3 train_videomae.py --out ... --pos fall --hard-weight 4 --test   # over-sample the speed-confusable clips
+
+--hard-weight W draws the "hard" deliberate movements W times as often and the hard falls W/2 times (there are about
+twice as many of them) (weighted sampling with replacement, same number of
+clips per epoch): falls that end low but not lying (UP-Fall activity 2 knees, activity 5 empty chair, and MCFD falls,
+which often end sitting) and deliberate downward movements (sit_down, lie_down, UP-Fall activity 9 picking something
+up). In these pairs the end pose is similar, so only the speed of the movement tells them apart.
 """
 import argparse
 import json
 import random
+import re
 import time
 from pathlib import Path
 
@@ -40,9 +48,21 @@ MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1, 1)
 STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1, 1)
 
 
+SPLITS = Path("/project/def-ajbonner/group12/splits")
+
+
+def is_hard(c):
+    """Speed-confusable clip: a fall that ends low but not lying, or a deliberate downward movement."""
+    a = re.search(r"Activity(\d+)", c["event_id"])
+    a = int(a.group(1)) if a else 0
+    if c["gold"] == "fall":
+        return (c["dataset"] == "up_fall" and a in (2, 5)) or c["dataset"] == "mcfd"
+    return c["gold"] in ("sit_down", "lie_down") or (c["dataset"] == "up_fall" and a == 9 and c["gold"] == "other")
+
+
 def load_clips(split, pos=POS):
     clips = []
-    with open(HERE.parent / "splits" / f"frames32_{split}.jsonl") as f:
+    with open(SPLITS / f"frames32_{split}.jsonl") as f:
         for line in f:
             e = json.loads(line)
             for cam, v in e["cams"].items():
@@ -126,6 +146,7 @@ def main():
     ap.add_argument("--pos", nargs="+", default=sorted(POS),
                     help="OmniFall labels counted as fall (default: fall fallen)")
     ap.add_argument("--predict-only", action="store_true", help="skip training; predict test with <out>/best")
+    ap.add_argument("--hard-weight", type=float, default=1.0, help="sampling weight of speed-confusable clips")
     args = ap.parse_args()
 
     from transformers import VideoMAEForVideoClassification
@@ -147,7 +168,17 @@ def main():
         MODEL, num_labels=2, id2label={0: "no_fall", 1: "fall"}, label2id={"no_fall": 0, "fall": 1},
         ignore_mismatched_sizes=True).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    loader = torch.utils.data.DataLoader(ClipDataset(train, train=True), batch_size=args.batch, shuffle=True,
+    hard = [is_hard(c) for c in train]
+    print(f"hard (speed-confusable) train clips: {sum(hard)} ({sum(h and c['y'] for h, c in zip(hard, train))} fall), "
+          f"weight {args.hard_weight}", flush=True)
+    sampler = None
+    if args.hard_weight != 1.0:
+        g = torch.Generator().manual_seed(args.seed)
+        sampler = torch.utils.data.WeightedRandomSampler([(args.hard_weight if not c["y"] else max(1.0, args.hard_weight / 2)) if h else 1.0
+                                                          for h, c in zip(hard, train)],
+                                                         num_samples=len(train), replacement=True, generator=g)
+    loader = torch.utils.data.DataLoader(ClipDataset(train, train=True), batch_size=args.batch,
+                                         shuffle=sampler is None, sampler=sampler,
                                          num_workers=args.workers, drop_last=True, persistent_workers=True)
     total = max(1, args.epochs * len(loader))
     warmup = len(loader)  # one epoch of linear warm-up, then cosine decay

@@ -3,7 +3,8 @@ last few seconds and, at most once per INFER_EVERY seconds, runs VideoMAE on the
 thread and applies the alarm rule. One request stream per phone (no separate timer), to stay under rate limits.
 
 Several phones can watch one room: the same room code on each phone puts them in one Room (detector.py), which
-raises a single alarm when two cameras agree (one camera alone: the single-camera rule). The "Room dashboard" tab
+raises a single alarm: when two cameras agree, or (checkers on, TRIGGER=one) when any one camera sees a fall, after
+which the checkers look at every camera's clip and the cameras that can see the person decide. The "Room dashboard" tab
 shows a room without a camera, beeps on an alarm, and can send push alerts for the room through ntfy (a free
 notification service: install the ntfy app and subscribe to the room's topic). Alerts carry text only, no images.
 Frames are only held in memory for a few seconds and are never written to disk."""
@@ -31,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 import gradio as gr
 
 from detector import AlarmRule, FallModel, FrameBuffer, Room, settings_from_env
-from verifier import RawBuffer, decide, load_verifiers
+from verifier import RawBuffer, camera_weights, decide, load_verifiers
 
 CFG = settings_from_env()
 MODEL_REPO = os.environ.get("MODEL_REPO", "CSC490/fall-models")  # trained weights (Hugging Face), not in git
@@ -62,6 +63,8 @@ RAW = {}  # session id -> RawBuffer of full-resolution frames (only when verifie
 CHECKS = ThreadPoolExecutor(max_workers=1)  # one check at a time; the model is big
 if VERIFIERS:
     threading.Thread(target=lambda: [v.load() for v in VERIFIERS], daemon=True).start()
+# Room trigger (detector.Room): "one" camera is enough when the checkers can filter false alarms, else "two" must agree.
+TRIGGER = os.environ.get("TRIGGER", "one" if VERIFIERS else "two")
 
 
 def room_code(text):
@@ -74,7 +77,7 @@ def get_room(code):
         for c in [c for c, r in ROOMS.items() if c != code and not r.live(now) and now - r.t > 600]:
             del ROOMS[c]  # forget rooms nobody has used for 10 minutes
         if code not in ROOMS:
-            ROOMS[code] = Room(CFG["threshold"], CFG["k"], CFG["cooldown"], agree=CFG["agree"])
+            ROOMS[code] = Room(CFG["threshold"], CFG["k"], CFG["cooldown"], agree=CFG["agree"], trigger=TRIGGER)
         return ROOMS[code]
 
 
@@ -157,8 +160,11 @@ def run_check(cams):
 
 
 def report_lines(reports):
+    w = camera_weights(reports)
+    blind = any(v == 0 for v in w.values()) and any(v > 0 for v in w.values())
     return [f"    {r['camera']} / {r['verifier']}: " + (f"{r['verdict']} (P {r['p_fall']:.2f}) - " if "verdict" in r else "")
-            + r["reason"] for r in reports]
+            + r["reason"] + ("  [no movement seen: probably blocked, not counted]" if blind and w.get(r["camera"]) == 0 else "")
+            for r in reports]
 
 
 def start_check(cams, on_done):
@@ -248,7 +254,8 @@ def room_lines(code, now):
     if VERIFIERS:  # the red alarm is the confirmed one; VideoMAE's own alarm only starts the check
         last_alarm = room.confirmed
     if len(cams) >= 2:
-        rule = f"{len(cams)} cameras, alarm when two agree"
+        rule = (f"{len(cams)} cameras, alarm when two agree" if TRIGGER == "two" else
+                f"{len(cams)} cameras, any one camera starts a check of all of them")
     elif cams:
         rule = "1 camera, single-camera rule (open the page on another phone with the same room code to add one)"
     else:
@@ -410,7 +417,8 @@ with gr.Blocks(title="Fall detector") as demo:
         "Best results with the whole body in view and the camera placed high, as in the training videos. "
         "Video is processed in memory only and is not stored.\n\n"
         "**Several cameras, one room:** open this page on each phone and type the same room code; the room alarms "
-        "when two cameras agree. Watch the room from a laptop in the *Room dashboard* tab."
+        + ("when two cameras agree. " if TRIGGER == "two" else "when one camera sees a fall and the cameras that can "
+           "see the person confirm it. ") + "Watch the room from a laptop in the *Room dashboard* tab."
     )
     state = gr.State(None)
     with gr.Tab("Camera"):
@@ -454,7 +462,7 @@ with gr.Blocks(title="Fall detector") as demo:
                show_progress="hidden")
     demo.load(from_url, outputs=[room_in, name_in, dash_room, topic_in])
     gr.Markdown(f"<small>Settings: window {CFG['window']} s, threshold {CFG['threshold']}, k {CFG['k']}, "
-                f"cooldown {CFG['cooldown']} s, two-camera agreement within {CFG['agree']} s, int8 {CFG['int8']}, "
+                f"cooldown {CFG['cooldown']} s, room trigger: {TRIGGER} camera(s) (agreement within {CFG['agree']} s), int8 {CFG['int8']}, "
                 f"second opinion: {', '.join(v.name for v in VERIFIERS) or 'off'}. "
                 "Research prototype, not a medical device.</small>")
 

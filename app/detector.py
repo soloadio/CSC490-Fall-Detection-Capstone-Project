@@ -120,14 +120,19 @@ class AlarmRule:
 class Room:
     """Several cameras watching one room; each posts its window scores, the room raises one alarm.
 
-    Two or more live cameras: room score = the second-highest of the cameras' highest P(fall) over the last
-    `agree` seconds, i.e. an alarm needs at least two cameras to see a fall within that time ("two agree" in
-    fusion_metrics.py: same recall as one camera, about 6x fewer false alarms on the paired test recordings).
-    One live camera: its own score, i.e. the single-camera rule. Times are server arrival times (time.monotonic),
-    which puts all cameras on one clock."""
+    trigger="two": room score = the second-highest of the cameras' highest P(fall) over the last `agree` seconds,
+    i.e. an alarm needs at least two cameras to see a fall within that time ("two agree" in fusion_metrics.py: same
+    recall as one camera, about 6x fewer false alarms on the paired test recordings). Use it without checkers.
+    trigger="one": room score = the highest camera score, i.e. ONE camera is enough. Use it with the checkers
+    (verifier.py), which then look at every camera's clip: a fall that one camera cannot see (behind furniture) still
+    raises the alarm through the camera that can (research/verify/occlusion_exp.py: with one camera blocked, "two"
+    kept 8/115 test falls, "one" 108/115, no extra false alarms).
+    One live camera: its own score either way. Times are server arrival times (time.monotonic), which puts all
+    cameras on one clock."""
 
-    def __init__(self, threshold=0.30, k=1, cooldown=10.0, agree=1.0, stale=3.0):
-        self.rule, self.agree, self.stale = AlarmRule(threshold, k, cooldown), agree, stale
+    def __init__(self, threshold=0.30, k=1, cooldown=10.0, agree=1.0, stale=3.0, trigger="two"):
+        assert trigger in ("one", "two"), trigger
+        self.rule, self.agree, self.stale, self.trigger = AlarmRule(threshold, k, cooldown), agree, stale, trigger
         self.cams = {}  # camera id -> {"name", "scores": deque of (t, p), "seen": t of the last score}
         self.lock = threading.Lock()
         self.t, self.score, self.last_alarm, self.alarm_cams, self.log = -1e9, None, None, [], []
@@ -150,7 +155,7 @@ class Room:
                 c["scores"].popleft()
             self.t = max(self.t, t)  # scores of different cameras can arrive slightly out of order
             per_cam = sorted(((self.recent(x, self.t), x["name"]) for x in self.live(self.t).values()), reverse=True)
-            self.score = per_cam[1][0] if len(per_cam) >= 2 else per_cam[0][0]
+            self.score = per_cam[1][0] if len(per_cam) >= 2 and self.trigger == "two" else per_cam[0][0]
             if not self.rule.update(self.t, self.score):
                 return False
             self.last_alarm = self.t

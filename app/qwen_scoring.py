@@ -6,11 +6,52 @@ scoring with explicit M-RoPE positions, mm_token_type_ids padding, --max-pixels 
 Solomon's research/qwen/run_probs_qwen.py, so the scores match his runs.
 
     qs = QwenScorer(base, adapter); qs.load(); qs.check(list_of_PIL_frames) -> {p_fall, mass, text}
+
+evidence_first=True (adapters trained with research/qwen/train_lora_qwen.py --evidence-first): the answer is
+{"evidence": "...", "verdict": "...", "occlusion_flag": ...}. The evidence sentence is generated first (forced prefix
+{"evidence": "), then P(fall) is read off the next-token probabilities after  ", "verdict": ", so the verdict depends on
+what the model has just described instead of the description justifying a verdict already given.
 """
 import copy
 
 import gemma_binary_scoring as gs
 from gemma_scoring import to_probs
+
+EF_PREFIX = '{"evidence": "'
+VERDICT_KEY = '", "verdict": "'
+ANSWER_EF = """Answer with a single JSON object and nothing else:
+{"evidence": "<one or two short sentences: the pose in the first frame, between which frames the pose changes, the pose in the last frame and what touches the floor>", "verdict": "<fall or no_fall>", "occlusion_flag": <true if the person is hidden or partly hidden, else false>}"""
+
+
+def instruction_ef(k):
+    return f"""You are watching {k} consecutive frames, in time order, of one person filmed by a single camera.
+Decide whether this person is falling or has fallen. Choose exactly one label:
+{gs.DEFS}
+
+{ANSWER_EF}"""
+
+
+def messages(frames, evidence_first=False):
+    """Chat messages for one clip: instruction, then 'Frame i (tag):' + image for each frame (PIL images or paths)."""
+    from PIL import Image
+    content = [{"type": "text", "text": (instruction_ef if evidence_first else gs.instruction)(len(frames))}]
+    for i, im in enumerate(frames):
+        tag = "earliest" if i == 0 else "latest" if i == len(frames) - 1 else "later"
+        im = im if hasattr(im, "size") else Image.open(im).convert("RGB")
+        content += [{"type": "text", "text": f"Frame {i + 1} ({tag}):"}, {"type": "image", "image": im}]
+    return [{"role": "user", "content": content}]
+
+
+def label_plan_ef(tok):
+    """Token ids of each label after VERDICT_KEY (checked not to merge with the quote before it)."""
+    key = tok.encode(VERDICT_KEY, add_special_tokens=False)
+    plan = {}
+    for lab in gs.CLASSES:
+        full = tok.encode(VERDICT_KEY + lab, add_special_tokens=False)
+        assert full[:len(key)] == key, lab
+        plan[lab] = full[len(key):]
+    return plan
+
 
 MAX_PIXELS = 78000  # per frame, as in Solomon's runs (edf/mcfd 320x240 unchanged, 640x480 scaled to ~308x224)
 
@@ -53,8 +94,10 @@ def score_labels(model, inputs, pre, plan):
 
 
 class QwenScorer:
-    def __init__(self, base="Qwen/Qwen2-VL-7B-Instruct", adapter=None, max_pixels=MAX_PIXELS, max_new_tokens=100):
+    def __init__(self, base="Qwen/Qwen2-VL-7B-Instruct", adapter=None, max_pixels=MAX_PIXELS, max_new_tokens=100,
+                 evidence_first=False):
         self.base, self.adapter, self.max_pixels, self.max_new_tokens = base, adapter, max_pixels, max_new_tokens
+        self.evidence_first = evidence_first
 
     def load(self, device_map="cuda"):
         import torch
@@ -63,6 +106,7 @@ class QwenScorer:
         self.processor.image_processor.size["longest_edge"] = self.max_pixels
         self.pre, self.plan, bad = gs.label_plan(self.processor.tokenizer)
         assert not bad, bad
+        self.plan_ef = label_plan_ef(self.processor.tokenizer)
         model = Qwen2VLForConditionalGeneration.from_pretrained(self.base, dtype=torch.bfloat16,
                                                                 device_map=device_map).eval()
         if self.adapter:
@@ -73,6 +117,8 @@ class QwenScorer:
 
     def check(self, frames):
         """frames: PIL images in time order (32) -> {p_fall, mass, text}."""
+        if self.evidence_first:
+            return self.check_ef(frames)
         import torch
         content = [{"type": "text", "text": gs.instruction(len(frames))}]
         for i, im in enumerate(frames):
@@ -86,3 +132,23 @@ class QwenScorer:
             gen = self.model.generate(**inp, max_new_tokens=self.max_new_tokens, do_sample=False)
         text = self.processor.decode(gen[0][inp["input_ids"].shape[-1]:], skip_special_tokens=True)
         return {"p_fall": float(probs["fall"]), "mass": float(mass), "text": text}
+
+    def check_ef(self, frames):
+        """Evidence first: generate the evidence, then score the verdict after it."""
+        import torch
+        tok = self.processor.tokenizer
+        prompt = self.processor.apply_chat_template(messages(frames, True), add_generation_prompt=True, tokenize=False)
+
+        def enc(text):
+            inp = self.processor(text=[text], images=list(frames), return_tensors="pt").to(self.model.device)
+            inp["pixel_values"] = inp["pixel_values"].to(torch.bfloat16)
+            return inp
+        inp = enc(prompt + EF_PREFIX)
+        with torch.inference_mode():
+            gen = self.model.generate(**inp, max_new_tokens=self.max_new_tokens, do_sample=False)
+        cont = self.processor.decode(gen[0][inp["input_ids"].shape[-1]:], skip_special_tokens=True)
+        k = cont.find(VERDICT_KEY)
+        evidence = cont[:k] if k >= 0 else cont.split('"')[0]
+        pre = tok.encode(EF_PREFIX + evidence + VERDICT_KEY, add_special_tokens=False)
+        probs, mass, _ = to_probs(score_labels(self.model, enc(prompt), pre, self.plan_ef))
+        return {"p_fall": float(probs["fall"]), "mass": float(mass), "text": EF_PREFIX + cont}

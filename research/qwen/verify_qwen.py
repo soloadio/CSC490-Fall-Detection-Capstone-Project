@@ -29,6 +29,8 @@ def main():
     ap.add_argument("--adapter", default="/scratch/wuhungma/models/qwen2vl-7b-fall-lora")
     ap.add_argument("--lists", nargs="+", default=["clips.jsonl", "clips_mv.jsonl"])
     ap.add_argument("--limit", type=int, default=0, help="at most N new clips per list (testing)")
+    ap.add_argument("--max-pixels", type=int, default=78000, help="pixels per frame (must match the adapter's training)")
+    ap.add_argument("--evidence-first", action="store_true", help="adapter trained with train_lora_qwen.py --evidence-first")
     a = ap.parse_args()
 
     from qwen_scoring import QwenScorer
@@ -37,7 +39,7 @@ def main():
         link = a.out / name
         if not link.exists() and (a.clips_dir / name).exists():
             link.symlink_to(a.clips_dir / name)
-    qs = QwenScorer(a.base, a.adapter).load()
+    qs = QwenScorer(a.base, a.adapter, max_pixels=a.max_pixels, evidence_first=a.evidence_first).load()
     print("Qwen + LoRA loaded", flush=True)
     for name in a.lists:
         suffix = "" if name == "clips.jsonl" else "_" + Path(name).stem
